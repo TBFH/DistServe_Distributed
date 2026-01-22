@@ -208,17 +208,9 @@ class SingleStageLLMEngine(ABC):
             logger.info(f"The engine performs context stage, setting num_cpu_blocks to 1")
             num_cpu_blocks = 1
         logger.info("Allocating kv cache")
-        kv_cache_mem_handles_1d = await asyncio.gather(*self._remote_call_all_workers_async(
+        await asyncio.gather(*self._remote_call_all_workers_async(
             "init_kvcache_and_swap", num_gpu_blocks, num_cpu_blocks
         ))
-        
-        # Gather the address of kv cache for block migration
-        self.kv_cache_mem_handles = []
-        for stage in self.workers:
-            kv_cache_mem_handles = []
-            for worker in stage:
-                kv_cache_mem_handles.append(kv_cache_mem_handles_1d.pop(0))
-            self.kv_cache_mem_handles.append(kv_cache_mem_handles)
         
         return num_gpu_blocks, num_cpu_blocks
 
@@ -445,7 +437,8 @@ class DecodingStageLLMEngine(SingleStageLLMEngine):
         placement_groups: List[PlacementGroup],
         clear_migrated_blocks_callback: Callable[[Request], None],
         engine_on_new_step_output_callback: Callable[[int, StepOutput], None],
-        engine_on_new_lifetime_event_callback: Callable[[int, LifetimeEvent, bool], None]
+        engine_on_new_lifetime_event_callback: Callable[[int, LifetimeEvent, bool], None],
+        context_workers: List[List[ParaWorker]]
     ):
         super().__init__(
             Stage.DECODING,
@@ -465,27 +458,43 @@ class DecodingStageLLMEngine(SingleStageLLMEngine):
         # Note: len(batched_in_pipeline) <= pp_size and batches are appended in FIFO
         self.batches_in_pipeline = []
         self.batches_ret_futures = []
-        
-    async def register_kvcache_mem_handles(
-        self,
-        context_parallel_config: ParallelConfig,
-        kv_cache_mem_handles: List[List[Tuple[cudaMemoryIpcHandle, cudaMemoryIpcHandle]]]
-    ):
-        """
-        Distribute kv cache memory IPC handles to workers and workers will
-        register those handles.
-        """
-        self.kv_cache_mem_handles = kv_cache_mem_handles
-        await asyncio.wait(self._remote_call_all_workers_async(
-            "register_kvcache_mem_handles",
-            context_parallel_config,
-            kv_cache_mem_handles
-        ))
+
+        self.context_workers = context_workers
+        self.migration_pairs = []
     
     def _free_request_resources(self, request_id: int):
         super()._free_request_resources(request_id)
         self.request_events.pop(request_id)
         self.request_outputs.pop(request_id)
+        
+    def init_migrate_pairs(self):
+        # 检查worker所部署分层是否重叠
+        def check_overlap(context: ParallelConfig, decode: ParallelConfig):
+            context_layers_per_worker = self.model_config.get_num_layers() // context.pipeline_parallel_size
+            decode_layers_per_worker = self.model_config.get_num_layers() // decode.pipeline_parallel_size
+            context_start = context.pipeline_parallel_rank * context_layers_per_worker
+            decode_start = decode.pipeline_parallel_rank * decode_layers_per_worker
+            context_range = list(range(context_start, context_start + context_layers_per_worker))
+            decode_range = list(range(decode_start, decode_start + decode_layers_per_worker))
+            overlap = sorted(set(context_range) & set(decode_range))
+            if overlap:
+                context_idxes = [i - context_range[0] for i in overlap]
+                decode_idxes = [i - decode_range[0] for i in overlap]
+                return (context_idxes[0], context_idxes[-1] + 1), (decode_idxes[0], decode_idxes[-1] + 1)
+            else:
+                return None
+
+        for stage in self.context_workers:
+            context_worker = stage[0]
+            for stage in self.workers:
+                decode_worker = stage[0]
+                context_pc = ray.get(context_worker.get_parallel_config.remote())
+                decode_pc = ray.get(decode_worker.get_parallel_config.remote())
+                overlap_res = check_overlap(context_pc, decode_pc)
+                if overlap_res:
+                    context_bound, decode_bound = overlap_res
+                    self.migration_pairs.append((context_worker, decode_worker, context_bound, decode_bound))
+        print(f"\033[1;35m migration_pairs: {self.migration_pairs} \033[0m")
         
     async def _migrate_blocks(
         self,
@@ -521,12 +530,18 @@ class DecodingStageLLMEngine(SingleStageLLMEngine):
             migrating_req.req.request_id,
             LifetimeEvent(LifetimeEventType.MigrationBegin)
         )
-        await asyncio.wait(self._remote_call_all_workers_async(
-            "migrate_blocks",
-            migrating_req.block_indexes,
-            migrating_req.context_parallel_config,
-            target_block_indexes
-        ))
+
+
+        # 仅支持流水线并行，不支持张良并行
+        # 重叠分层间进行KVCache传输
+        handles = []
+        for context_worker, decode_worker, context_bound, decode_bound in self.migration_pairs:
+            remote_context_kvcache = context_worker.send_kvcache.remote(migrating_req.block_indexes, context_bound)
+            handle = decode_worker.receive_kvcache.remote(target_block_indexes, decode_bound, remote_context_kvcache)
+            handles.append(handle)
+        ray.get(handles)
+
+
         self.engine_on_new_lifetime_event_callback(
             migrating_req.req.request_id,
             LifetimeEvent(LifetimeEventType.MigrationEnd)

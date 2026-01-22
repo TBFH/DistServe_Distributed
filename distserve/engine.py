@@ -33,6 +33,12 @@ from distserve.lifetime import LifetimeEvent, LifetimeEventType
 
 logger = init_logger(__name__)
 
+# 配置相关环境变量，防止通信问题导致的程序卡死
+import os
+os.environ['NCCL_P2P_DISABLE'] = '1'
+os.environ['NCCL_IB_DISABLE'] = '1'
+os.environ['NCCL_SOCKET_IFNAME'] = 'eno4'
+
 
 class LLMEngine:
     """
@@ -104,6 +110,12 @@ class LLMEngine:
         )
         
         self.bridge_queue = asyncio.Queue()
+
+        if not ray.is_initialized():
+            ray.init(
+                include_dashboard=False
+                # address="ray://219.222.20.79:30807"
+            )
         
         logger.info("Initializing placement group")
         placement_groups = self._init_placement_groups()
@@ -130,7 +142,8 @@ class LLMEngine:
             placement_groups,
             self.context_engine.clear_migrated_blocks_callback,
             self._on_new_step_output_callback,
-            self._on_new_lifetime_event_callback
+            self._on_new_lifetime_event_callback,
+            self.context_engine.workers
         )
         
         # request_id -> list of StepOutput
@@ -209,10 +222,7 @@ class LLMEngine:
             self.context_engine.initialize(),
             self.decoding_engine.initialize()
         )
-        await self.decoding_engine.register_kvcache_mem_handles(
-            self.context_engine.parallel_config,
-            self.context_engine.kv_cache_mem_handles
-        )
+        self.decoding_engine.init_migrate_pairs()
         self.engine_initialized = True
         
     def _remote_call_all_workers(

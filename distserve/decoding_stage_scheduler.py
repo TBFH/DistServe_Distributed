@@ -173,7 +173,8 @@ class DecodingStageFCFSScheduler(DecodingStageScheduler):
 
     def _get_last_stage_batch(self) -> BatchedRequests:
         last_stage_index = (
-            self.cur_index + 1
+            # self.cur_index + 1
+            self.cur_index - 1
         ) % self.parallel_config.pipeline_parallel_size
         return self.batch_queues[last_stage_index]
 

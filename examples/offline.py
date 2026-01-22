@@ -10,7 +10,7 @@ from distserve.config import (
 )
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--model', type=str, help='The model to use', default='meta-llama/Llama-2-7b-hf')
+parser.add_argument('--model', type=str, help='The model to use', default='/mnt/Data/austin/hf_models/opt-1.3b')
 args = parser.parse_args()
 
 # Sample prompts.
@@ -40,7 +40,7 @@ llm = OfflineLLM(
         ),
         decoding=ParallelConfig(
             tensor_parallel_size=1,
-            pipeline_parallel_size=1
+            pipeline_parallel_size=2
         )
     ),
     cache_config=CacheConfig(

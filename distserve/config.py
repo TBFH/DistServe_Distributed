@@ -64,6 +64,9 @@ class ParallelConfig:
 
     def is_last_stage(self) -> bool:
         return self.pipeline_parallel_rank == self.pipeline_parallel_size - 1
+    
+    def is_first_stage(self) -> bool:
+        return self.pipeline_parallel_rank == 0
 
 
 class DisaggParallelConfig:

@@ -21,6 +21,32 @@ from distserve.downloader import download_and_convert_weights
 logger = init_logger(__name__)
 
 
+# If we call `torch.ops.swapping_ops.swap` in `ParaWorker.swap_blocks()` directly,
+# it will result in a "cannot pickle" error. Don't know why
+def call_swapping_op(
+    source_block_ids: List[int],
+    target_block_ids: List[int],
+    is_swap_in: bool,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    k_swap: torch.Tensor,
+    v_swap: torch.Tensor,
+):
+    """Call the swapping operation."""
+    # The swapping operation is a custom C++ operator that swaps the blocks
+    # between the CPU and GPU. The operator is defined in
+    # FastServe/fastserve/swapping_ops.cpp.
+    torch.ops.swapping_ops.swap(
+        source_block_ids,
+        target_block_ids,
+        is_swap_in,
+        k_cache,
+        v_cache,
+        k_swap,
+        v_swap,
+    )
+
+
 @ray.remote(num_cpus=0, num_gpus=1)
 class ParaWorker:
     """A worker class that executes (a partition of) the model on a GPU.
@@ -98,7 +124,7 @@ class ParaWorker:
         torch.cuda.synchronize()
         logger.info(f"(worker {self.stage}.#{self.worker_id}) model {self.model_config.model} loaded")
 
-    def init_kvcache_and_swap(self, num_gpu_blocks, num_cpu_blocks) -> (cudaMemoryIpcHandle, cudaMemoryIpcHandle):
+    def init_kvcache_and_swap(self, num_gpu_blocks, num_cpu_blocks):
         """
         Allocate the K/V cache and swap.
         
@@ -129,9 +155,6 @@ class ParaWorker:
             kv_swap_shape, dtype=self.model_config.get_torch_dtype(), device="cpu", pin_memory=True
         )
         torch.cuda.synchronize()
-        
-        return torch.ops.block_migration_ops.get_ipc_mem_handle(self.k_cache), \
-               torch.ops.block_migration_ops.get_ipc_mem_handle(self.v_cache)
 
     def _get_block_size_in_bytes(
         self,
@@ -189,7 +212,8 @@ class ParaWorker:
         # Reset the seed to ensure that the random state is not affected by
         # the model initialization and profiling.
         set_random_seed(self.model_config.seed)
-        return num_gpu_blocks, num_cpu_blocks
+        # return num_gpu_blocks, num_cpu_blocks
+        return 150, 1
 
     def step(
         self,
@@ -225,46 +249,32 @@ class ParaWorker:
         # print(f"Worker {self.stage}.#{self.worker_id} Step end")
 
         return generated_tokens_ids
+    
+    def send_kvcache(
+        self,
+        source_block_indexes: List[int],
+        layer_bound: Tuple[int, int]
+    ):
+        kcache_to_migrate = []
+        vcache_to_migrate = []
+        for idx in source_block_indexes:
+            kcache_to_migrate.append(self.k_cache[idx][layer_bound[0]: layer_bound[1]])
+            vcache_to_migrate.append(self.v_cache[idx][layer_bound[0]: layer_bound[1]])
+        # return copy.deepcopy(kcache_to_migrate), copy.deepcopy(vcache_to_migrate)
+        return kcache_to_migrate, vcache_to_migrate
 
-    def register_kvcache_mem_handles(
+    def receive_kvcache(
         self,
-        context_parallel_config: ParallelConfig,
-        kvcache_ipc_mem_handles: List[List[Tuple[cudaMemoryIpcHandle, cudaMemoryIpcHandle]]]
+        target_block_indexes: List[int],
+        layer_bound: Tuple[int, int],
+        remote_context_kvcache
     ):
-        for pp_rank, stage_workers in enumerate(kvcache_ipc_mem_handles):
-            for tp_rank, mem_handle in enumerate(stage_workers):
-                tmp_parallel_config = copy.deepcopy(context_parallel_config)
-                tmp_parallel_config.pipeline_parallel_rank = pp_rank
-                tmp_parallel_config.tensor_parallel_rank = tp_rank
-                torch.ops.block_migration_ops.register_ipc_mem_handle(
-                    kvcache_ipc_mem_handles[pp_rank][tp_rank][0],
-                    kvcache_ipc_mem_handles[pp_rank][tp_rank][1],
-                    self.model_config.get_num_layers(),
-                    self.model_config.get_num_heads(),
-                    tmp_parallel_config.to_list(),
-                    self.parallel_config.to_list()
-                )
-                
-        torch.cuda.synchronize()
-                
-    def migrate_blocks(
-        self,
-        context_block_indexes: List[int],
-        context_parallel_config: ParallelConfig,
-        decoding_block_indexes: List[int]
-    ):
-        torch.ops.block_migration_ops.migrate_blocks(
-            context_parallel_config.pipeline_parallel_size,
-            context_parallel_config.tensor_parallel_size,
-            context_block_indexes,
-            self.parallel_config.pipeline_parallel_size,
-            self.parallel_config.tensor_parallel_size,
-            self.parallel_config.pipeline_parallel_rank,
-            self.parallel_config.tensor_parallel_rank,
-            decoding_block_indexes,
-            self.k_cache,
-            self.v_cache
-        )
+        k_cache, v_cache = remote_context_kvcache
+        # print(f"\033[1;35m remote_context_kvcache got: {k_cache[0].shape} \n decode k_cache: {self.k_cache.shape} \033[0m")
+        for i in range(len(k_cache)):
+            self.k_cache[target_block_indexes[i]][layer_bound[0]: layer_bound[1]].copy_(k_cache[i])
+            self.v_cache[target_block_indexes[i]][layer_bound[0]: layer_bound[1]].copy_(v_cache[i])
+        return True
         
     def swap_blocks(
         self,
@@ -300,7 +310,16 @@ class ParaWorker:
 
         # Swap
         with torch.cuda.stream(stream):
-            torch.ops.swapping_ops.swap(
+            # torch.ops.swapping_ops.swap(
+            #     source_block_ids,
+            #     target_block_ids,
+            #     is_swap_in,
+            #     self.k_cache,
+            #     self.v_cache,
+            #     self.k_swap,
+            #     self.v_swap,
+            # )
+            call_swapping_op(
                 source_block_ids,
                 target_block_ids,
                 is_swap_in,
@@ -332,3 +351,6 @@ class ParaWorker:
         if self.latest_swap_out_event is not None:
             self.latest_swap_out_event.synchronize()
             self.latest_swap_out_event = None
+
+    def get_parallel_config(self):
+        return self.parallel_config
