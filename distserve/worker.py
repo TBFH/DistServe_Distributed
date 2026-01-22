@@ -99,6 +99,9 @@ class ParaWorker:
         # Statistics
         self.execution_time = 0.0
         self.blocked_swapping_time = 0.0
+        # Intermediate results buffer for pipeline_parallel
+        self.intermed_input = None
+        self.intermed_output = None
 
     def ready(self):
         """
@@ -221,6 +224,7 @@ class ParaWorker:
         input_tokens_batched,
         first_token_indexes,
         block_table,
+        intermed = None
     ) -> List[int]:
         """Run one step of inference on the batch of requests."""
 
@@ -235,6 +239,20 @@ class ParaWorker:
                 self.swap_event_table.pop(request_id, None)
         self.blocked_swapping_time += time.time() - start
 
+        intermed_shape = (
+            sum([len(req) for req in input_tokens_batched]),
+            self.model_config.get_hidden_size()
+        )
+        self.intermed_input = torch.empty(
+            0, dtype=self.model_config.get_torch_dtype(), device="cuda"
+        )
+        self.intermed_output = torch.empty(
+            intermed_shape, dtype=self.model_config.get_torch_dtype(), device="cuda"
+        )
+        if not self.parallel_config.is_first_stage() and len(input_tokens_batched) > 0:
+            _, inter_in = intermed
+            self.intermed_input = inter_in
+
         start = time.time()
         # print(f"Worker {self.stage}.#{self.worker_id} Step begin")
         # run forward
@@ -244,11 +262,13 @@ class ParaWorker:
             self.k_cache,
             self.v_cache,
             block_table,
+            self.intermed_input,
+            self.intermed_output
         )
         self.execution_time += time.time() - start
         # print(f"Worker {self.stage}.#{self.worker_id} Step end")
 
-        return generated_tokens_ids
+        return generated_tokens_ids, copy.deepcopy(self.intermed_output)
     
     def send_kvcache(
         self,

@@ -24,7 +24,8 @@ prompts = [
 
 # Create a sampling params object.
 sampling_params = SamplingParams(
-    temperature=0.8, top_p=0.95, max_tokens=64, stop=["\n"]
+    # temperature=0.8, top_p=0.95, max_tokens=64, stop=["\n"]
+    temperature=0.8, top_p=0.95, max_tokens=64, stop=[]
 )
 
 # Create an LLM for offline inference.
@@ -36,7 +37,7 @@ llm = OfflineLLM(
     disagg_parallel_config=DisaggParallelConfig(
         context=ParallelConfig(
             tensor_parallel_size=1,
-            pipeline_parallel_size=1
+            pipeline_parallel_size=2
         ),
         decoding=ParallelConfig(
             tensor_parallel_size=1,
@@ -70,5 +71,5 @@ for prompt, step_outputs in zip(prompts, outputs):
     # new_token_ids = [step_output.new_token_id for step_output in step_outputs]
     # output_text = llm.tokenizer.decode(new_token_ids)
     print(
-        f"Prompt: {prompt!r}, Generated text: {' '.join([step_output.new_token for step_output in step_outputs])} ({len(step_outputs)} tokens generated)."
+        f"Prompt: {prompt!r}, Generated text: {' '.join([step_output.new_token for step_output in step_outputs])!r} ({len(step_outputs)} tokens generated)."
     )

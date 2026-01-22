@@ -223,6 +223,16 @@ class SingleStageLLMEngine(ABC):
             for worker in stage:
                 handlers.append(getattr(worker, func_name).remote(*args))
         return handlers
+    
+    def remote_forward_async(self, *args):
+        """
+        call all worker's forward asynchronously and transmit intermediate results between workers
+        """
+        intermed = None
+        for stage in self.workers:
+            for worker in stage:
+                intermed = worker.step.remote(*args, intermed)
+        return intermed
 
     def abort_request(self, request_id: int):
         """
@@ -321,8 +331,16 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
             # push the batch into pipeline
             batched_requests.start_one_iteration(time.time())
             self.batches_in_pipeline.append(batched_requests)
-            remote_calls = self._remote_call_all_workers_async(
-                "step",
+            # remote_calls = self._remote_call_all_workers_async(
+            #     "step",
+            #     batched_requests.get_request_ids(),
+            #     batched_requests.get_input_tokens_batched(),
+            #     batched_requests.get_first_token_indexes(),
+            #     self.block_manager.get_partial_block_table(
+            #         batched_requests.get_request_ids()
+            #     ),
+            # )
+            remote_call = self.remote_forward_async(
                 batched_requests.get_request_ids(),
                 batched_requests.get_input_tokens_batched(),
                 batched_requests.get_first_token_indexes(),
@@ -334,7 +352,8 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
             pp_size = self.parallel_config.pipeline_parallel_size
             tp_size = self.parallel_config.tensor_parallel_size
             # only the leader of the last stage return valid output, i.e., generated tokens ids
-            self.batches_ret_futures.append(remote_calls[(pp_size - 1) * tp_size])
+            # self.batches_ret_futures.append(remote_calls[(pp_size - 1) * tp_size])
+            self.batches_ret_futures.append(remote_call)
 
         if len(self.batches_in_pipeline) == self.parallel_config.pipeline_parallel_size:
             # if the pipeline is full, block until the earliest batch returns
@@ -344,7 +363,8 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
                 self.batches_in_pipeline.pop(0)
                 self.batches_ret_futures.pop(0)
             else:
-                generated_tokens_ids = await self.batches_ret_futures[0]
+                # generated_tokens_ids = await self.batches_ret_futures[0]
+                generated_tokens_ids, _ = await self.batches_ret_futures[0]
                     
                 end_time = time.time()
                 generated_tokens = []
@@ -590,8 +610,16 @@ class DecodingStageLLMEngine(SingleStageLLMEngine):
             # push the batch into pipeline
             batched_requests.start_one_iteration(time.time())
             self.batches_in_pipeline.append(batched_requests)
-            remote_calls = self._remote_call_all_workers_async(
-                "step",
+            # remote_calls = self._remote_call_all_workers_async(
+            #     "step",
+            #     batched_requests.get_request_ids(),
+            #     batched_requests.get_input_tokens_batched(),
+            #     batched_requests.get_first_token_indexes(),
+            #     self.block_manager.get_partial_block_table(
+            #         batched_requests.get_request_ids()
+            #     ),
+            # )
+            remote_call = self.remote_forward_async(
                 batched_requests.get_request_ids(),
                 batched_requests.get_input_tokens_batched(),
                 batched_requests.get_first_token_indexes(),
@@ -600,7 +628,8 @@ class DecodingStageLLMEngine(SingleStageLLMEngine):
                 ),
             )
             # only the leader of the last stage return valid output, i.e., generated tokens ids
-            self.batches_ret_futures.append(remote_calls[(pp_size - 1) * tp_size])
+            # self.batches_ret_futures.append(remote_calls[(pp_size - 1) * tp_size])
+            self.batches_ret_futures.append(remote_call)
 
         # output buffer
         finished_reqs = []
@@ -612,7 +641,8 @@ class DecodingStageLLMEngine(SingleStageLLMEngine):
                 self.batches_in_pipeline.pop(0)
                 self.batches_ret_futures.pop(0)
             else:
-                generated_tokens_ids = await self.batches_ret_futures[0]
+                # generated_tokens_ids = await self.batches_ret_futures[0]
+                generated_tokens_ids, _ = await self.batches_ret_futures[0]
                 end_time = time.time()
                 generated_tokens = []
                 for gen_token_id in generated_tokens_ids:
