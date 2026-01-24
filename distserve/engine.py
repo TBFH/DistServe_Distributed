@@ -320,9 +320,9 @@ def add_engine_cli_args(parser: argparse.ArgumentParser):
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--use-dummy-weights", action="store_true")
     
-    parser.add_argument("--context-pipeline-parallel-size", type=int, default=1)
+    parser.add_argument("--context-pipeline-parallel-size", type=int, default=2)
     parser.add_argument("--context-tensor-parallel-size", type=int, default=1)
-    parser.add_argument("--decoding-pipeline-parallel-size", type=int, default=1)
+    parser.add_argument("--decoding-pipeline-parallel-size", type=int, default=2)
     parser.add_argument("--decoding-tensor-parallel-size", type=int, default=1)
     
     parser.add_argument("--block-size", type=int, default=16)
