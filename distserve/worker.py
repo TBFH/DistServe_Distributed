@@ -224,7 +224,11 @@ class ParaWorker:
         input_tokens_batched,
         first_token_indexes,
         block_table,
-        intermed = None
+        
+        current_layer_input,
+        layer_id,
+        operation,
+        intermed = None,
     ) -> List[int]:
         """Run one step of inference on the batch of requests."""
 
@@ -249,8 +253,11 @@ class ParaWorker:
         self.intermed_output = torch.empty(
             intermed_shape, dtype=self.model_config.get_torch_dtype(), device="cuda"
         )
-        if not self.parallel_config.is_first_stage() and len(input_tokens_batched) > 0:
-            _, inter_in = intermed
+        # if not self.parallel_config.is_first_stage() and len(input_tokens_batched) > 0:
+        #     _, inter_in = intermed
+        #     self.intermed_input = inter_in
+        _, inter_in = intermed
+        if inter_in != None:
             self.intermed_input = inter_in
 
         start = time.time()
@@ -263,7 +270,11 @@ class ParaWorker:
             self.v_cache,
             block_table,
             self.intermed_input,
-            self.intermed_output
+            self.intermed_output,
+
+            current_layer_input,
+            layer_id,
+            operation
         )
         self.execution_time += time.time() - start
         # print(f"Worker {self.stage}.#{self.worker_id} Step end")
@@ -273,13 +284,14 @@ class ParaWorker:
     def send_kvcache(
         self,
         source_block_indexes: List[int],
-        layer_bound: Tuple[int, int]
+        layer_bound: Tuple[int, int],
+        head_bound: Tuple[int, int]
     ):
         kcache_to_migrate = []
         vcache_to_migrate = []
         for idx in source_block_indexes:
-            kcache_to_migrate.append(self.k_cache[idx][layer_bound[0]: layer_bound[1]])
-            vcache_to_migrate.append(self.v_cache[idx][layer_bound[0]: layer_bound[1]])
+            kcache_to_migrate.append(self.k_cache[idx][layer_bound[0]: layer_bound[1]][head_bound[0]: head_bound[1]])
+            vcache_to_migrate.append(self.v_cache[idx][layer_bound[0]: layer_bound[1]][head_bound[0]: head_bound[1]])
         # return copy.deepcopy(kcache_to_migrate), copy.deepcopy(vcache_to_migrate)
         return kcache_to_migrate, vcache_to_migrate
 
@@ -287,13 +299,14 @@ class ParaWorker:
         self,
         target_block_indexes: List[int],
         layer_bound: Tuple[int, int],
+        head_bound: Tuple[int, int],
         remote_context_kvcache
     ):
         k_cache, v_cache = remote_context_kvcache
         # print(f"\033[1;35m remote_context_kvcache got: {k_cache[0].shape} \n decode k_cache: {self.k_cache.shape} \033[0m")
         for i in range(len(k_cache)):
-            self.k_cache[target_block_indexes[i]][layer_bound[0]: layer_bound[1]].copy_(k_cache[i])
-            self.v_cache[target_block_indexes[i]][layer_bound[0]: layer_bound[1]].copy_(v_cache[i])
+            self.k_cache[target_block_indexes[i]][layer_bound[0]: layer_bound[1]][head_bound[0]: head_bound[1]].copy_(k_cache[i])
+            self.v_cache[target_block_indexes[i]][layer_bound[0]: layer_bound[1]][head_bound[0]: head_bound[1]].copy_(v_cache[i])
         return True
         
     def swap_blocks(

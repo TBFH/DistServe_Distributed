@@ -228,11 +228,54 @@ class SingleStageLLMEngine(ABC):
         """
         call all worker's forward asynchronously and transmit intermediate results between workers
         """
-        intermed = None
-        for stage in self.workers:
-            for worker in stage:
-                intermed = worker.step.remote(*args, intermed)
-        return intermed
+        async def remote_forward(*args):
+            intermed = (None, None)
+            current_layer_input = torch.empty(0, dtype=self.model_config.get_torch_dtype(), device="cuda")
+            num_layer_per_stage = self.model_config.get_num_layers() // self.parallel_config.pipeline_parallel_size
+
+            for pp_id, stage in enumerate(self.workers):
+                
+                for layer_id in range(num_layer_per_stage):
+
+                    if layer_id == 0 and pp_id == 0:
+                        intermeds = []
+                        for worker in stage:
+                            intermed_t = worker.step.remote(*args, current_layer_input, layer_id, 0, intermed)
+                            intermeds.append(intermed_t)
+                        intermeds = ray.get(intermeds)
+                        # gathered_output = torch.zeros_like(intermeds[0][1])
+                        # for _, output_tensor in intermeds:
+                        #     gathered_output += output_tensor
+                        # current_layer_input = copy.deepcopy(gathered_output)
+                        current_layer_input = [output_tensor for _, output_tensor in intermeds]
+                        intermed = [(None, output_tensor) for _, output_tensor in intermeds]
+
+                    for j in [1,2,3]:
+                        intermeds = []
+                        for idx, worker in enumerate(stage):
+                            # print(f"\033[1;34m type1:{type(current_layer_input)}  type2:{type(intermed)} \033[0m")
+                            intermed_t = worker.step.remote(*args, current_layer_input[idx], layer_id, j, intermed[idx])
+                            intermeds.append(intermed_t)
+                        intermeds = ray.get(intermeds)
+                        gathered_output = torch.zeros_like(intermeds[0][1])
+                        for _, output_tensor in intermeds:
+                            gathered_output += output_tensor
+                        if j == 3:
+                            intermed = [(None, output_tensor) for _, output_tensor in intermeds]
+                        else:
+                            intermed = [(None, gathered_output) for _ in range(len(intermeds))]
+                
+                    current_layer_input = [output_tensor for _, output_tensor in intermed]
+            
+            # 最后计算Layernorm / RMSNorm 及 Sampling
+            intermeds = []
+            for idx, worker in enumerate(stage):
+                intermed_t = worker.step.remote(*args, current_layer_input[idx], layer_id, -1, intermed[idx])
+                intermeds.append(intermed_t)
+            intermeds = ray.get(intermeds)
+            return intermeds[0]
+    
+        return asyncio.create_task(remote_forward(*args))
 
     def abort_request(self, request_id: int):
         """
@@ -490,30 +533,47 @@ class DecodingStageLLMEngine(SingleStageLLMEngine):
     def init_migrate_pairs(self):
         # 检查worker所部署分层是否重叠
         def check_overlap(context: ParallelConfig, decode: ParallelConfig):
+            # 检查流水线是否重叠
             context_layers_per_worker = self.model_config.get_num_layers() // context.pipeline_parallel_size
             decode_layers_per_worker = self.model_config.get_num_layers() // decode.pipeline_parallel_size
-            context_start = context.pipeline_parallel_rank * context_layers_per_worker
-            decode_start = decode.pipeline_parallel_rank * decode_layers_per_worker
-            context_range = list(range(context_start, context_start + context_layers_per_worker))
-            decode_range = list(range(decode_start, decode_start + decode_layers_per_worker))
-            overlap = sorted(set(context_range) & set(decode_range))
-            if overlap:
-                context_idxes = [i - context_range[0] for i in overlap]
-                decode_idxes = [i - decode_range[0] for i in overlap]
-                return (context_idxes[0], context_idxes[-1] + 1), (decode_idxes[0], decode_idxes[-1] + 1)
+            context_pp_start = context.pipeline_parallel_rank * context_layers_per_worker
+            decode_pp_start = decode.pipeline_parallel_rank * decode_layers_per_worker
+            context_pp_range = list(range(context_pp_start, context_pp_start + context_layers_per_worker))
+            decode_pp_range = list(range(decode_pp_start, decode_pp_start + decode_layers_per_worker))
+            overlap_pp = sorted(set(context_pp_range) & set(decode_pp_range))
+
+            if overlap_pp:     # 流水线重叠
+                # 检查张量是否重叠
+                context_heads_per_worker = self.model_config.get_num_heads() // context.tensor_parallel_size
+                decode_heads_per_worker = self.model_config.get_num_heads() // decode.tensor_parallel_size
+                context_tp_start = context.tensor_parallel_rank * context_heads_per_worker
+                decode_tp_start = decode.tensor_parallel_rank * decode_heads_per_worker
+                context_tp_range = list(range(context_tp_start, context_tp_start + context_heads_per_worker))
+                decode_tp_range = list(range(decode_tp_start, decode_tp_start + decode_heads_per_worker))
+                overlap_tp = sorted(set(context_tp_range) & set(decode_tp_range))
+
+                if overlap_tp:      # 张量重叠
+                    context_layer_idxes = [i - context_pp_range[0] for i in overlap_pp]
+                    decode_layer_idxes = [i - decode_pp_range[0] for i in overlap_pp]
+                    context_head_idxes = [i - context_tp_range[0] for i in overlap_tp]
+                    decode_head_idxes = [i - decode_tp_range[0] for i in overlap_tp]
+                    return (context_layer_idxes[0], context_layer_idxes[-1] + 1), (decode_layer_idxes[0], decode_layer_idxes[-1] + 1), \
+                            (context_head_idxes[0], context_head_idxes[-1] + 1), (decode_head_idxes[0], decode_head_idxes[-1] + 1)
+                else:
+                    return None
             else:
                 return None
 
-        for stage in self.context_workers:
-            context_worker = stage[0]
-            for stage in self.workers:
-                decode_worker = stage[0]
-                context_pc = ray.get(context_worker.get_parallel_config.remote())
-                decode_pc = ray.get(decode_worker.get_parallel_config.remote())
-                overlap_res = check_overlap(context_pc, decode_pc)
-                if overlap_res:
-                    context_bound, decode_bound = overlap_res
-                    self.migration_pairs.append((context_worker, decode_worker, context_bound, decode_bound))
+        for context_stage in self.context_workers:
+            for context_worker in context_stage:
+                for decode_stage in self.workers:
+                    for decode_worker in decode_stage:
+                        context_pc = ray.get(context_worker.get_parallel_config.remote())
+                        decode_pc = ray.get(decode_worker.get_parallel_config.remote())
+                        overlap_res = check_overlap(context_pc, decode_pc)
+                        if overlap_res:
+                            context_layer_bound, decode_layer_bound, context_head_bound, decode_head_bound = overlap_res
+                            self.migration_pairs.append((context_worker, decode_worker, context_layer_bound, decode_layer_bound, context_head_bound, decode_head_bound))
         print(f"\033[1;35m migration_pairs: {self.migration_pairs} \033[0m")
         
     async def _migrate_blocks(
@@ -555,9 +615,9 @@ class DecodingStageLLMEngine(SingleStageLLMEngine):
         # 仅支持流水线并行，不支持张良并行
         # 重叠分层间进行KVCache传输
         handles = []
-        for context_worker, decode_worker, context_bound, decode_bound in self.migration_pairs:
-            remote_context_kvcache = context_worker.send_kvcache.remote(migrating_req.block_indexes, context_bound)
-            handle = decode_worker.receive_kvcache.remote(target_block_indexes, decode_bound, remote_context_kvcache)
+        for context_worker, decode_worker, context_layer_bound, decode_layer_bound, context_head_bound, decode_head_bound in self.migration_pairs:
+            remote_context_kvcache = context_worker.send_kvcache.remote(migrating_req.block_indexes, context_layer_bound, context_head_bound)
+            handle = decode_worker.receive_kvcache.remote(target_block_indexes, decode_layer_bound, decode_head_bound, remote_context_kvcache)
             handles.append(handle)
         ray.get(handles)
 

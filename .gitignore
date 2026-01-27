@@ -9,7 +9,8 @@
 profile_database
 
 # Ignore /SwiftTransformer
-/SwiftTransformer
+# /SwiftTransformer
+/SwiftTransformer/build
 
 # Ignore .vscode
 **/.vscode
