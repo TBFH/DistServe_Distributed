@@ -158,7 +158,7 @@ class SingleStageLLMEngine(ABC):
                 tmp_parallel_config.tensor_parallel_rank = j
                 worker = ParaWorker.options(
                     scheduling_strategy=NodeAffinitySchedulingStrategy(
-                        node_id=self.deployment[i],
+                        node_id=self.deployment[i*self.parallel_config.tensor_parallel_size+j],
                         soft=False
                     )
                 ).remote(
