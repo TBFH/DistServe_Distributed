@@ -303,6 +303,7 @@ class ParaWorker:
         for idx in source_block_indexes:
             kcache_to_migrate.append(self.k_cache[idx, layer_bound[0]:layer_bound[1], head_bound[0]:head_bound[1], :, :])
             vcache_to_migrate.append(self.v_cache[idx, layer_bound[0]:layer_bound[1], head_bound[0]:head_bound[1], :, :])
+        print(f"\033[1;33m kcache_to_migrate: {kcache_to_migrate[0]}")
         return copy.deepcopy(kcache_to_migrate), copy.deepcopy(vcache_to_migrate)
         # return kcache_to_migrate, vcache_to_migrate
 
@@ -315,6 +316,8 @@ class ParaWorker:
     ):
         k_cache, v_cache = remote_context_kvcache
         # print(f"\033[1;35m remote_context_kvcache got: {k_cache[0].shape} \t\t decode k_cache: {self.k_cache.shape} \033[0m")
+        print(f"\033[1;35m remote_context_kvcache got: {k_cache[0]}")
+        print(f"\033[1;34m decode k_cache: {self.k_cache} \033[0m")
         for i in range(len(k_cache)):
             self.k_cache[target_block_indexes[i], layer_bound[0]:layer_bound[1], head_bound[0]: head_bound[1], :, :].copy_(k_cache[i])
             self.v_cache[target_block_indexes[i], layer_bound[0]:layer_bound[1], head_bound[0]: head_bound[1], :, :].copy_(v_cache[i])
