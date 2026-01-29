@@ -5,7 +5,7 @@ if not os.environ.get("SWIFT_TRANSFORMER_LIB_PATH"):
     BASE_DIR = os.path.dirname(__file__)
     # LIB_PATH = os.path.join(BASE_DIR, "../build/lib_init", "libst_pybinding.so")
     # LIB_PATH = os.path.join(os.path.expanduser("~"), "libst_pybinding.so")
-    LIB_PATH = os.path.join(os.path.expanduser("~"), "test_libst_pybinding.so")
+    LIB_PATH = os.path.join(os.path.expanduser("~"), "distserve_libst_pybinding.so")
 else:
     LIB_PATH = os.environ["SWIFT_TRANSFORMER_LIB_PATH"]
 

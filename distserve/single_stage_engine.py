@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 import asyncio
 
 import ray
-from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
+from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy, NodeAffinitySchedulingStrategy
 from ray.util.placement_group import PlacementGroup
 
 import torch
@@ -87,7 +87,7 @@ class SingleStageLLMEngine(ABC):
         parallel_config: ParallelConfig,
         cache_config: CacheConfig,
         sched_config: ContextStageSchedConfig | DecodingStageSchedConfig,
-        placement_groups: List[PlacementGroup],
+        deployment,
         engine_on_new_step_output_callback: Callable[[int, StepOutput], None],   # The LLMEngine's callback function when a new StepOutput of a particular request is generated
         engine_on_new_lifetime_event_callback: Optional[Callable[[int, LifetimeEvent, bool], None]] = None,   # The LLMEngine's callback function when a new LifetimeEvent of a particular request is generated
     ):
@@ -105,7 +105,7 @@ class SingleStageLLMEngine(ABC):
             trust_remote_code=model_config.trust_remote_code,
         )
 
-        self.placement_groups = placement_groups
+        self.deployment = deployment
         
         # workers[i][j] is the j-th tensor-parallel worker in pipeline stage i
         self.workers = []
@@ -148,26 +148,18 @@ class SingleStageLLMEngine(ABC):
         the worker will be placed in the corresponding placement group
         """
         logger.info("Initializing workers")
-
-        layer_per_placement_group = self.model_config.get_num_layers() // len(self.placement_groups)
-        layer_per_pp = self.model_config.get_num_layers(self.parallel_config)
-        pp_per_placement_group = layer_per_placement_group // layer_per_pp
-        
-        pp_id = copy.deepcopy(torch.ops.nccl_ops.generate_nccl_id())
         
         init_handlers = []
         for i in range(self.parallel_config.pipeline_parallel_size):
             workers = []
-            placement_group_index = i // pp_per_placement_group
-            tp_id = copy.deepcopy(torch.ops.nccl_ops.generate_nccl_id())
-            cur_placement_group = self.placement_groups[placement_group_index]
             for j in range(self.parallel_config.tensor_parallel_size):
                 tmp_parallel_config = copy.deepcopy(self.parallel_config)
                 tmp_parallel_config.pipeline_parallel_rank = i
                 tmp_parallel_config.tensor_parallel_rank = j
                 worker = ParaWorker.options(
-                    scheduling_strategy=PlacementGroupSchedulingStrategy(
-                        placement_group=cur_placement_group
+                    scheduling_strategy=NodeAffinitySchedulingStrategy(
+                        node_id=self.deployment[i],
+                        soft=False
                     )
                 ).remote(
                     worker_id=(i*self.parallel_config.tensor_parallel_size+j),
@@ -175,8 +167,8 @@ class SingleStageLLMEngine(ABC):
                     model_config=self.model_config,
                     cache_config=self.cache_config,
                     parallel_config=tmp_parallel_config,
-                    pipeline_parallel_id=pp_id,
-                    tensor_parallel_id=tp_id,
+                    # pipeline_parallel_id=pp_id,
+                    # tensor_parallel_id=tp_id,
                 )
                 workers.append(worker)
                 init_handlers.append(worker.ready.remote())
@@ -301,7 +293,7 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
         parallel_config: ParallelConfig,
         cache_config: CacheConfig,
         sched_config: ContextStageSchedConfig,
-        placement_groups: List[PlacementGroup],
+        deployment,
         engine_on_new_step_output_callback: Callable[[int, StepOutput], None],
         engine_on_new_lifetime_event_callback: Callable[[int, LifetimeEvent, bool], None]
     ):
@@ -311,7 +303,7 @@ class ContextStageLLMEngine(SingleStageLLMEngine):
             parallel_config,
             cache_config,
             sched_config,
-            placement_groups,
+            deployment,
             engine_on_new_step_output_callback,
             engine_on_new_lifetime_event_callback
         )
@@ -485,7 +477,7 @@ class DecodingStageLLMEngine(SingleStageLLMEngine):
         parallel_config: ParallelConfig,
         cache_config: CacheConfig,
         sched_config: DecodingStageSchedConfig,
-        placement_groups: List[PlacementGroup],
+        deployment,
         clear_migrated_blocks_callback: Callable[[Request], None],
         engine_on_new_step_output_callback: Callable[[int, StepOutput], None],
         engine_on_new_lifetime_event_callback: Callable[[int, LifetimeEvent, bool], None],
@@ -497,7 +489,7 @@ class DecodingStageLLMEngine(SingleStageLLMEngine):
             parallel_config,
             cache_config,
             sched_config,
-            placement_groups,
+            deployment,
             engine_on_new_step_output_callback,
             engine_on_new_lifetime_event_callback
         )

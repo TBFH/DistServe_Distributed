@@ -117,7 +117,7 @@ class ParaWorker:
         self.model = get_model_op(
             self.model_config, self.parallel_config, self.cache_config
         )
-        self.model.init_communicator(self.tensor_parallel_id, self.pipeline_parallel_id)
+        # self.model.init_communicator(self.tensor_parallel_id, self.pipeline_parallel_id)
         torch.cuda.synchronize()
         if self.model_config.use_dummy_weights:
             self.model.init_dummy_weights()

@@ -36,14 +36,18 @@ class OfflineLLM:
         disagg_parallel_config: DisaggParallelConfig,
         cache_config: CacheConfig,
         context_sched_config: ContextStageSchedConfig,
-        decoding_sched_config: DecodingStageSchedConfig
+        decoding_sched_config: DecodingStageSchedConfig,
+        context_devices: List[str] = None,
+        decoding_devices: List[str] = None
     ):
         self.engine = LLMEngine(
             model_config,
             disagg_parallel_config,
             cache_config,
             context_sched_config,
-            decoding_sched_config
+            decoding_sched_config,
+            context_devices,
+            decoding_devices
         )
         
         asyncio.run(self.engine.initialize())

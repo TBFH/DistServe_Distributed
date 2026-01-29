@@ -7,6 +7,7 @@ import argparse
 
 import ray
 from ray.util.placement_group import PlacementGroup
+from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 
 from distserve.config import (
     ModelConfig, 
@@ -38,6 +39,26 @@ import os
 os.environ['NCCL_P2P_DISABLE'] = '1'
 os.environ['NCCL_IB_DISABLE'] = '1'
 os.environ['NCCL_SOCKET_IFNAME'] = 'eno4'
+
+
+@ray.remote(num_gpus=1)
+def resource_inspect():
+    # GPU Overall Inspect
+    import pycuda.driver as cuda
+    cuda.init()
+    device = cuda.Device(0)
+    device_name = device.name()
+    context = device.make_context()
+    total_memory = device.total_memory() / (1024 ** 2)
+    free_memory = cuda.mem_get_info()[0] / (1024 ** 2)
+    used_memory = total_memory - free_memory
+    context.pop()
+    return {
+        "GPU_Name": device_name,
+        "Total_VRAM": total_memory,
+        "Used_VRAM": used_memory,
+        "Free_VRAM": free_memory,
+    }
 
 
 class LLMEngine:
@@ -94,7 +115,9 @@ class LLMEngine:
         disagg_parallel_config: DisaggParallelConfig,
         cache_config: CacheConfig,
         context_sched_config: ContextStageSchedConfig,
-        decoding_sched_config: DecodingStageSchedConfig
+        decoding_sched_config: DecodingStageSchedConfig,
+        context_devices: List[str] = None,
+        decoding_devices: List[str] = None
     ):
         self.model_config = model_config
         self.disagg_parallel_config = disagg_parallel_config
@@ -113,12 +136,30 @@ class LLMEngine:
 
         if not ray.is_initialized():
             ray.init(
-                include_dashboard=False
-                # address="ray://219.222.20.79:30807"
+                # include_dashboard=False
+                address="ray://219.222.20.79:30807"
             )
         
         logger.info("Initializing placement group")
-        placement_groups = self._init_placement_groups()
+        # placement_groups = self._init_placement_groups()
+        
+        if context_devices != None and decoding_devices != None:
+            assert (
+                len(context_devices) == disagg_parallel_config.context.pipeline_parallel_size * disagg_parallel_config.context.tensor_parallel_size
+                and
+                len(decoding_devices) == disagg_parallel_config.decoding.pipeline_parallel_size * disagg_parallel_config.decoding.tensor_parallel_size
+            ), "num of available devices does not fits parallel_config"
+
+        self.context_devices = context_devices
+        self.decoding_devices = decoding_devices
+
+        self.node_resources = {}
+        self._init_inspect()
+
+        self.device_map = {}
+        self._device_nodeid_mapping()
+
+        context_deployment, decoding_deployment = self._init_deployments()
         
         logger.info("Initializing context stage LLM engine")
         self.context_engine = ContextStageLLMEngine(
@@ -127,7 +168,7 @@ class LLMEngine:
             disagg_parallel_config.context,
             cache_config,
             context_sched_config,
-            placement_groups,
+            context_deployment,
             self._on_new_step_output_callback,
             self._on_new_lifetime_event_callback
         )
@@ -139,7 +180,7 @@ class LLMEngine:
             disagg_parallel_config.decoding,
             cache_config,
             decoding_sched_config,
-            placement_groups,
+            decoding_deployment,
             self.context_engine.clear_migrated_blocks_callback,
             self._on_new_step_output_callback,
             self._on_new_lifetime_event_callback,
@@ -158,6 +199,65 @@ class LLMEngine:
         self.request_lifetime_events: Dict[int, List[LifetimeEvent]] = {}
         
         self.engine_initialized = False
+
+    def _init_inspect(self):
+        nodes = ray.nodes()
+        futures = []
+        for i, node in enumerate(nodes):
+            if node['Alive']:
+                node_id = node['NodeID']
+                future = resource_inspect.options(
+                    scheduling_strategy=NodeAffinitySchedulingStrategy(
+                        node_id=node_id, soft=False
+                    )
+                ).remote()
+                futures.append((node_id, future))
+        # Save & Print out Inspects Data
+        for idx, (node_id, future) in enumerate(futures):
+            result = ray.get(future)
+            self.node_resources[node_id] = result
+            # outlog = ''
+            # outlog += f'[Worker{idx}] NodeID: {node_id}\n'
+            # outlog += f'[Worker{idx}] Device: {self.device_map[node_id]}\n'
+            # outlog += f'[Worker{idx}] Used/Total VRAM: {result["Used_VRAM"]/1024:.1f}/{result["Total_VRAM"]/1024:.1f} GB ({(result["Used_VRAM"]/result["Total_VRAM"])*100:.1f}%)\n'
+            # outlog += f'[Worker{idx}] Free VRAM: {result["Free_VRAM"]/1024:.1f} GB\n'
+            # print(outlog)
+
+    def _device_nodeid_mapping(self):
+        nodes = ray.nodes()
+        for node in nodes:
+            if node['Alive']:
+                node_id = node['NodeID']
+                resources = list(node['Resources'].keys())
+                for el in resources:
+                    if el.startswith('device'):
+                        device = el.split(':',1)[1]
+                self.device_map[node_id] = device
+
+    def _init_deployments(self):
+        selected = []
+
+        def get_deployment(deployment:List, available_devices:List):
+            if len(available_devices) > 0:
+                device_map_rvt = {v:k for k,v in self.device_map.items()}
+                for node in available_devices:
+                    if node not in device_map_rvt:
+                        raise RuntimeError(f"Node [{node}] not found in cluster")
+                    if node in selected:
+                        raise RuntimeError(f"Node [{node}] is already used")
+                    deployment.append(device_map_rvt[node])
+                    selected.extend([node, device_map_rvt[node]])
+            else:
+                for node_id, res in self.node_resources.items():
+                    if res['Free_VRAM'] > 4096 and 'jetson' in self.device_map[node_id] and node_id not in selected:
+                        deployment.append(node_id)
+                        selected.extend([self.device_map[node_id], node_id])
+            return deployment
+
+        context_deployment = []
+        decoding_deployment = []
+        return get_deployment(context_deployment, self.context_devices), \
+                get_deployment(decoding_deployment, self.decoding_devices)
     
     def _on_new_step_output_callback(self, request_id: int, step_output: StepOutput):
         """
