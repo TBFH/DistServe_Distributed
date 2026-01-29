@@ -256,9 +256,20 @@ class ParaWorker:
         # if not self.parallel_config.is_first_stage() and len(input_tokens_batched) > 0:
         #     _, inter_in = intermed
         #     self.intermed_input = inter_in
-        _, inter_in = intermed
-        if inter_in != None:
-            self.intermed_input = inter_in
+
+        intermed = [inter if isinstance(inter, tuple) else ray.get(inter) for inter in intermed]
+        if len(intermed) == 1:
+            _, inter_in = intermed[0]
+            if inter_in != None:
+                self.intermed_input = inter_in
+        else:
+            gathered_output = torch.zeros_like(intermed[0][1], dtype=self.model_config.get_torch_dtype(), device="cuda")
+            for _, output_tensor in intermed:
+                gathered_output += output_tensor
+            self.intermed_input = gathered_output
+
+        if not isinstance(current_layer_input, torch.Tensor):
+            _, current_layer_input = current_layer_input
 
         start = time.time()
         # print(f"Worker {self.stage}.#{self.worker_id} Step begin")

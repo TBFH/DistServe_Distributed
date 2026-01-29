@@ -228,54 +228,42 @@ class SingleStageLLMEngine(ABC):
         """
         call all worker's forward asynchronously and transmit intermediate results between workers
         """
-        async def remote_forward(*args):
-            intermed = (None, None)
-            current_layer_input = torch.empty(0, dtype=self.model_config.get_torch_dtype(), device="cuda")
-            num_layer_per_stage = self.model_config.get_num_layers() // self.parallel_config.pipeline_parallel_size
+        
+        intermed = [(None, None)]
+        current_layer_input = torch.empty(0, dtype=self.model_config.get_torch_dtype(), device="cuda")
+        num_layer_per_stage = self.model_config.get_num_layers() // self.parallel_config.pipeline_parallel_size
 
-            for pp_id, stage in enumerate(self.workers):
-                
-                for layer_id in range(num_layer_per_stage):
+        for pp_id, stage in enumerate(self.workers):
+            for layer_id in range(num_layer_per_stage):
 
-                    if layer_id == 0 and pp_id == 0:
-                        intermeds = []
-                        for worker in stage:
-                            intermed_t = worker.step.remote(*args, current_layer_input, layer_id, 0, intermed)
-                            intermeds.append(intermed_t)
-                        intermeds = ray.get(intermeds)
-                        # gathered_output = torch.zeros_like(intermeds[0][1])
-                        # for _, output_tensor in intermeds:
-                        #     gathered_output += output_tensor
-                        # current_layer_input = copy.deepcopy(gathered_output)
-                        current_layer_input = [output_tensor for _, output_tensor in intermeds]
-                        intermed = [(None, output_tensor) for _, output_tensor in intermeds]
+                if layer_id == 0 and pp_id == 0:
+                    intermeds = []
+                    for worker in stage:
+                        intermed_t = worker.step.remote(*args, current_layer_input, layer_id, 0, intermed)
+                        intermeds.append(intermed_t)
+                    current_layer_input = intermeds
+                    intermed_in = intermeds
 
-                    for j in [1,2,3]:
-                        intermeds = []
-                        for idx, worker in enumerate(stage):
-                            # print(f"\033[1;34m type1:{type(current_layer_input)}  type2:{type(intermed)} \033[0m")
-                            intermed_t = worker.step.remote(*args, current_layer_input[idx], layer_id, j, intermed[idx])
-                            intermeds.append(intermed_t)
-                        intermeds = ray.get(intermeds)
-                        gathered_output = torch.zeros_like(intermeds[0][1])
-                        for _, output_tensor in intermeds:
-                            gathered_output += output_tensor
-                        if j == 3:
-                            intermed = [(None, output_tensor) for _, output_tensor in intermeds]
+                for j in [1,2,3]:
+                    intermeds = []
+                    for idx, worker in enumerate(stage):
+                        if j == 1:
+                            intermed_t = worker.step.remote(*args, current_layer_input[idx], layer_id, j, [intermed_in[idx]])
                         else:
-                            intermed = [(None, gathered_output) for _ in range(len(intermeds))]
-                
-                    current_layer_input = [output_tensor for _, output_tensor in intermed]
+                            intermed_t = worker.step.remote(*args, current_layer_input[idx], layer_id, j, intermed_in)
+                        intermeds.append(intermed_t)
+                    intermed_in = intermeds
             
-            # 最后计算Layernorm / RMSNorm 及 Sampling
-            intermeds = []
-            for idx, worker in enumerate(stage):
-                intermed_t = worker.step.remote(*args, current_layer_input[idx], layer_id, -1, intermed[idx])
-                intermeds.append(intermed_t)
-            intermeds = ray.get(intermeds)
-            return intermeds[0]
-    
-        return asyncio.create_task(remote_forward(*args))
+                current_layer_input = intermed_in
+        
+        # 最后计算Layernorm / RMSNorm 及 Sampling
+        intermeds = []
+        for idx, worker in enumerate(stage):
+            intermed_t = worker.step.remote(*args, current_layer_input[idx], layer_id, -1, [intermed_in[idx]])
+            intermeds.append(intermed_t)
+        # intermeds = ray.get(intermeds)
+
+        return intermeds[0]
 
     def abort_request(self, request_id: int):
         """
