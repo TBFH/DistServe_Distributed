@@ -290,8 +290,8 @@ class ParaWorker:
         kcache_to_migrate = []
         vcache_to_migrate = []
         for idx in source_block_indexes:
-            kcache_to_migrate.append(self.k_cache[idx][layer_bound[0]: layer_bound[1]][head_bound[0]: head_bound[1]])
-            vcache_to_migrate.append(self.v_cache[idx][layer_bound[0]: layer_bound[1]][head_bound[0]: head_bound[1]])
+            kcache_to_migrate.append(self.k_cache[idx, layer_bound[0]:layer_bound[1], head_bound[0]:head_bound[1], :, :])
+            vcache_to_migrate.append(self.v_cache[idx, layer_bound[0]:layer_bound[1], head_bound[0]:head_bound[1], :, :])
         # return copy.deepcopy(kcache_to_migrate), copy.deepcopy(vcache_to_migrate)
         return kcache_to_migrate, vcache_to_migrate
 
@@ -303,10 +303,10 @@ class ParaWorker:
         remote_context_kvcache
     ):
         k_cache, v_cache = remote_context_kvcache
-        # print(f"\033[1;35m remote_context_kvcache got: {k_cache[0].shape} \n decode k_cache: {self.k_cache.shape} \033[0m")
+        # print(f"\033[1;35m remote_context_kvcache got: {k_cache[0].shape} \t\t decode k_cache: {self.k_cache.shape} \033[0m")
         for i in range(len(k_cache)):
-            self.k_cache[target_block_indexes[i]][layer_bound[0]: layer_bound[1]][head_bound[0]: head_bound[1]].copy_(k_cache[i])
-            self.v_cache[target_block_indexes[i]][layer_bound[0]: layer_bound[1]][head_bound[0]: head_bound[1]].copy_(v_cache[i])
+            self.k_cache[target_block_indexes[i], layer_bound[0]:layer_bound[1], head_bound[0]: head_bound[1], :, :].copy_(k_cache[i])
+            self.v_cache[target_block_indexes[i], layer_bound[0]:layer_bound[1], head_bound[0]: head_bound[1], :, :].copy_(v_cache[i])
         return True
         
     def swap_blocks(

@@ -36,8 +36,8 @@ llm = OfflineLLM(
     ),
     disagg_parallel_config=DisaggParallelConfig(
         context=ParallelConfig(
-            tensor_parallel_size=2,
-            pipeline_parallel_size=1
+            tensor_parallel_size=1,
+            pipeline_parallel_size=2
         ),
         decoding=ParallelConfig(
             tensor_parallel_size=2,
