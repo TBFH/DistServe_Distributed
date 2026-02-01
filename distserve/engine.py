@@ -153,13 +153,14 @@ class LLMEngine:
         self.context_devices = context_devices
         self.decoding_devices = decoding_devices
 
-        self.node_resources = {}
-        self._init_inspect()
-
         self.device_map = {}
         self._device_nodeid_mapping()
 
+        self.node_resources = {}
+        self._init_inspect()
+
         context_deployment, decoding_deployment = self._init_deployments()
+        print(f"\033[1;34m context_deployment: {context_deployment} \t\t decoding_deployment: {decoding_deployment} \033[0m")
         
         logger.info("Initializing context stage LLM engine")
         self.context_engine = ContextStageLLMEngine(
@@ -237,8 +238,8 @@ class LLMEngine:
     def _init_deployments(self):
         selected = []
 
-        def get_deployment(deployment:List, available_devices:List):
-            if len(available_devices) > 0:
+        def get_deployment(deployment:List, available_devices:List, parallel_size:int):
+            if available_devices:
                 device_map_rvt = {v:k for k,v in self.device_map.items()}
                 for node in available_devices:
                     if node not in device_map_rvt:
@@ -248,16 +249,20 @@ class LLMEngine:
                     deployment.append(device_map_rvt[node])
                     selected.extend([node, device_map_rvt[node]])
             else:
+                cnt = 0
                 for node_id, res in self.node_resources.items():
-                    if res['Free_VRAM'] > 4096 and 'jetson' in self.device_map[node_id] and node_id not in selected:
+                    if res['Free_VRAM'] > 4096 and 'jetson' in self.device_map[node_id] and node_id not in selected and cnt < parallel_size:
                         deployment.append(node_id)
                         selected.extend([self.device_map[node_id], node_id])
+                        cnt += 1
             return deployment
 
         context_deployment = []
         decoding_deployment = []
-        return get_deployment(context_deployment, self.context_devices), \
-                get_deployment(decoding_deployment, self.decoding_devices)
+        context_size = self.disagg_parallel_config.context.pipeline_parallel_size * self.disagg_parallel_config.context.tensor_parallel_size
+        decoding_size = self.disagg_parallel_config.decoding.pipeline_parallel_size * self.disagg_parallel_config.decoding.tensor_parallel_size
+        return get_deployment(context_deployment, self.context_devices, context_size), \
+                get_deployment(decoding_deployment, self.decoding_devices, decoding_size)
     
     def _on_new_step_output_callback(self, request_id: int, step_output: StepOutput):
         """

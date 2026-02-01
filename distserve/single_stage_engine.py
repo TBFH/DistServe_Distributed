@@ -148,10 +148,12 @@ class SingleStageLLMEngine(ABC):
         the worker will be placed in the corresponding placement group
         """
         logger.info("Initializing workers")
-        
+
+        pp_id = copy.deepcopy(torch.ops.nccl_ops.generate_nccl_id())
         init_handlers = []
         for i in range(self.parallel_config.pipeline_parallel_size):
             workers = []
+            tp_id = copy.deepcopy(torch.ops.nccl_ops.generate_nccl_id())
             for j in range(self.parallel_config.tensor_parallel_size):
                 tmp_parallel_config = copy.deepcopy(self.parallel_config)
                 tmp_parallel_config.pipeline_parallel_rank = i
@@ -167,8 +169,8 @@ class SingleStageLLMEngine(ABC):
                     model_config=self.model_config,
                     cache_config=self.cache_config,
                     parallel_config=tmp_parallel_config,
-                    # pipeline_parallel_id=pp_id,
-                    # tensor_parallel_id=tp_id,
+                    pipeline_parallel_id=pp_id,
+                    tensor_parallel_id=tp_id,
                 )
                 workers.append(worker)
                 init_handlers.append(worker.ready.remote())
@@ -224,6 +226,7 @@ class SingleStageLLMEngine(ABC):
         intermed = [(None, None)]
         current_layer_input = torch.empty(0, dtype=self.model_config.get_torch_dtype(), device="cuda")
         num_layer_per_stage = self.model_config.get_num_layers() // self.parallel_config.pipeline_parallel_size
+        intermed_in = None
 
         for pp_id, stage in enumerate(self.workers):
             for layer_id in range(num_layer_per_stage):
@@ -253,7 +256,6 @@ class SingleStageLLMEngine(ABC):
         for idx, worker in enumerate(stage):
             intermed_t = worker.step.remote(*args, current_layer_input[idx], layer_id, -1, [intermed_in[idx]])
             intermeds.append(intermed_t)
-        # intermeds = ray.get(intermeds)
 
         return intermeds[0]
 
