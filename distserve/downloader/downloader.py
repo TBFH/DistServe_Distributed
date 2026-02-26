@@ -23,7 +23,7 @@ REPO_ID_SEPARATOR = "--"
 
 # cache - where the converted weights are saved
 # default_cache = os.path.join(os.path.expanduser("~"), ".cache", "distserve")
-default_cache = os.path.join("/mnt/Data/austin/", ".cache", "testserve")
+default_cache = os.path.join("/mnt/Data/austin/hf_models/", ".cache", "testserve")
 DISTSERVE_CACHE = os.getenv("DISTSERVE_CACHE", default_cache)
 
 # MODEL_REGISTRY - Supported models

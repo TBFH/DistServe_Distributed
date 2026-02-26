@@ -301,8 +301,8 @@ class ParaWorker:
         kcache_to_migrate = []
         vcache_to_migrate = []
         for idx in source_block_indexes:
-            kcache_to_migrate.append(self.k_cache[idx, layer_bound[0]:layer_bound[1], head_bound[0]:head_bound[1], :, :])
-            vcache_to_migrate.append(self.v_cache[idx, layer_bound[0]:layer_bound[1], head_bound[0]:head_bound[1], :, :])
+            kcache_to_migrate.append(self.k_cache[idx, layer_bound[0]:layer_bound[1], head_bound[0]:head_bound[1], :, :].clone())
+            vcache_to_migrate.append(self.v_cache[idx, layer_bound[0]:layer_bound[1], head_bound[0]:head_bound[1], :, :].clone())
         # return copy.deepcopy(kcache_to_migrate), copy.deepcopy(vcache_to_migrate)
         return kcache_to_migrate, vcache_to_migrate
 

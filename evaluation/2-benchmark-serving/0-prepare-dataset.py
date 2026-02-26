@@ -206,7 +206,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="sharegpt")
     parser.add_argument("--dataset-path", type=str, required=True)
-    parser.add_argument("--tokenizer", type=str, required=True)
+    # parser.add_argument("--tokenizer", type=str, required=True)
     parser.add_argument("--trust-remote-code", action="store_true")
     parser.add_argument("--output-path", type=str, required=True)
     parser.add_argument("--seed", type=int, default=0)
@@ -223,7 +223,8 @@ if __name__ == "__main__":
     random.seed(args.seed)
     np.random.seed(args.seed)
     
-    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=args.trust_remote_code)
+    # tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, trust_remote_code=args.trust_remote_code)
+    tokenizer = AutoTokenizer.from_pretrained("/mnt/Data/austin/hf_models/opt-1.3b", trust_remote_code=args.trust_remote_code)
     dataset = read_dataset(args.dataset_path, tokenizer, args.dataset, args)
     print(f"Loaded {len(dataset.reqs)} TestRequests from dataset {args.dataset_path}")
     dataset.dump(args.output_path)
