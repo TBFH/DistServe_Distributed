@@ -1,5 +1,5 @@
 import time
-from typing import List, Union, Optional, AsyncGenerator
+from typing import List, Union, Optional, AsyncGenerator, Dict, Any
 
 import asyncio
 from tqdm import tqdm
@@ -163,7 +163,7 @@ class AsyncLLM:
                 max_batch_size=args.decoding_max_batch_size,
                 max_tokens_per_batch=args.decoding_max_tokens_per_batch,
                 # model_name=args.model,
-                waiting_block_prop_threshold=0.05
+                waiting_block_prop_threshold=0.5
             ),
             context_devices=eval(args.context_devices),
             decoding_devices=eval(args.decoding_devices)
@@ -219,6 +219,9 @@ class AsyncLLM:
 
     def get_and_pop_request_lifetime_events(self, request_id: str):
         return self.engine.request_lifetime_events.pop(request_id)
+    
+    def summary(self, start: float, end: float) -> Dict[str, Any]:
+        return self.engine.summary_all(start, end)
     
     async def abort(self, request_id: str) -> None:
         """Abort a request.

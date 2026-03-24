@@ -102,6 +102,8 @@ class ParaWorker:
         # Intermediate results buffer for pipeline_parallel
         self.intermed_input = None
         self.intermed_output = None
+        # Init Resource Profiling
+        self.init_resources = self.resource_inspect()
 
     def ready(self):
         """
@@ -110,6 +112,29 @@ class ParaWorker:
         """
         logger.info(f"Worker {self.stage}.#{self.worker_id} created on host {socket.gethostname()} and gpu #{self.gpu_id}")
         pass
+
+    # 检视当前worker的资源情况，方便后续init_kvcache
+    def resource_inspect(self):
+        node_id = ray.get_runtime_context().get_node_id()
+        # GPU Overall Inspect
+        import pycuda.driver as cuda
+        cuda.init()
+        device = cuda.Device(0)
+        device_name = device.name()
+        context = device.make_context()
+        total_memory = device.total_memory() / (1024 ** 2)
+        free_memory = cuda.mem_get_info()[0] / (1024 ** 2)
+        used_memory = total_memory - free_memory
+        context.pop()
+        return {
+            "GPU_Name": device_name,
+            "Total_VRAM": total_memory,
+            "Used_VRAM": used_memory,
+            "Free_VRAM": free_memory,
+            "NodeID": node_id,
+            "Rank": self.parallel_config.pipeline_parallel_rank,
+            # "Num_Layers": self.parallel_config.pipeline_distribution[self.parallel_config.pipeline_parallel_rank]
+        }
 
     def init_model(self):
         # Initialize the model.
@@ -188,6 +213,7 @@ class ParaWorker:
         # Profile memory usage with max_batch_size requests and the total
         # number of tokens equal to max_tokens_per_batch.
         total_gpu_memory = get_gpu_memory()
+        available_gpu_memory = self.init_resources['Free_VRAM'] * (1024 ** 2)
         peak_runtime_memory = (
             total_gpu_memory * 0.01
             + self.model_config.get_model_size_in_bytes(
@@ -203,7 +229,7 @@ class ParaWorker:
             f"kv cache size for one token: {block_size_in_bytes / block_size / MB:.5f} MB"
         )
         num_gpu_blocks = int(
-            (total_gpu_memory * gpu_memory_utilization - peak_runtime_memory)
+            (available_gpu_memory * gpu_memory_utilization - peak_runtime_memory)
             // block_size_in_bytes
         )
         num_cpu_blocks = int(cpu_swap_space // block_size_in_bytes)
@@ -216,7 +242,13 @@ class ParaWorker:
         # the model initialization and profiling.
         set_random_seed(self.model_config.seed)
         # return num_gpu_blocks, num_cpu_blocks
-        return 150, 1
+        return {
+            'node_id': ray.get_runtime_context().get_node_id(),
+            'num_gpu_blocks': num_gpu_blocks,
+            'num_cpu_blocks': 1,
+            'available_vram': available_gpu_memory,
+            'peak_vram': peak_runtime_memory
+        }
 
     def step(
         self,

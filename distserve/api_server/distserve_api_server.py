@@ -56,8 +56,6 @@ from distserve.config import (
 )
 from distserve.lifetime import json_encode_lifetime_events
 
-import ray
-
 logger = init_logger(__name__)
 
 TIMEOUT_KEEP_ALIVE = 300  # seconds.
@@ -120,6 +118,16 @@ async def generate(request: Request) -> Response:
         return JSONResponse(ret)
 
 
+@app.post("/summary")
+async def summary(request: Request) -> Response:
+    request_dict = await request.json()
+    start = request_dict["start"]
+    end = request_dict["end"]
+    summarys = engine.summary(start, end)
+    summarys.pop('pc-3090-1', None)
+    return JSONResponse(summarys)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", type=str, default="localhost")
@@ -129,7 +137,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     set_random_seed(args.seed)
-    ray.init()
     
     engine = AsyncLLM.from_engine_args(args)
 

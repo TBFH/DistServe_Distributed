@@ -1,6 +1,6 @@
 import time
 import copy
-from typing import List, Optional, Tuple, Dict, AsyncGenerator
+from typing import List, Optional, Tuple, Dict, AsyncGenerator, Any
 import asyncio
 import math
 import argparse
@@ -24,7 +24,7 @@ from distserve.request import (
     create_request,
 )
 from distserve.tokenizer import get_tokenizer
-from distserve.utils import Counter
+from distserve.utils import Counter, profile_powers
 from distserve.single_stage_engine import (
     StepOutput,
     ContextStageLLMEngine,
@@ -417,6 +417,14 @@ class LLMEngine:
     def abort_request(self, request_id: int):
         self.context_engine.abort_request(request_id)
         self.decoding_engine.abort_request(request_id)
+
+    def summary_all(self, start: float, end: float) -> Dict[str, Any]:
+        return profile_powers(
+            devices=self.context_devices + self.decoding_devices,
+            start=start,
+            end=end,
+            step=1
+        )
         
 def add_engine_cli_args(parser: argparse.ArgumentParser):
     parser.add_argument("--model", type=str, required=True)

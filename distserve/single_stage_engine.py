@@ -190,17 +190,37 @@ class SingleStageLLMEngine(ABC):
         Profile available blocks and initialize k/v cache on all workers
         """
         logger.info("Profiling available blocks")
-        num_gpu_blocks, num_cpu_blocks = await self.workers[0][0]._profile_num_available_blocks.remote(
+        futures = self._remote_call_all_workers_async(
+            "_profile_num_available_blocks",
             self.cache_config.block_size,
             self.cache_config.gpu_memory_utilization,
             self.cache_config.cpu_swap_space,
         )
-            
+        outlogs = "[GPU Profiles] \n"
+        gpu_blocks = []
+        for future in futures:
+            result = ray.get(future)
+            node_name = self.device_map[result['node_id']]
+            gpu_block = result['num_gpu_blocks']
+            available_vram = result['available_vram']
+            model_vram = result['peak_vram']
+            kvcache_vram = available_vram * self.cache_config.gpu_memory_utilization - model_vram
+            gpu_blocks.append(gpu_block)
+            outlogs += f"{node_name}: \n"
+            outlogs += f"\t Block Available: {gpu_block} \n"
+            outlogs += f"\t VRAM Available: {((available_vram) / (1024**3)):.2f} GB \n"
+            outlogs += f"\t VRAM Utilization Constraint: {self.cache_config.gpu_memory_utilization * 100}% \n"
+            outlogs += f"\t VRAM for Model: {((model_vram) / (1024**3)):.2f} GB \n"
+            outlogs += f"\t VRAM for KVCache: {((kvcache_vram) / (1024**3)):.2f} GB \n"
+        print(outlogs)
+        num_gpu_blocks = min(gpu_blocks)
+        
+        # if self.stage == Stage.PREFILL:
+        #     # Do not set to 0 to avoid division by 0
+        #     logger.info(f"The engine performs prefill stage, setting num_cpu_blocks to 1")
+        num_cpu_blocks = 1
         logger.info(f"Profiling result: num_gpu_blocks: {num_gpu_blocks}, num_cpu_blocks: {num_cpu_blocks}")
-        if self.stage == Stage.CONTEXT:
-            # Do not set to 0 to avoid division by 0
-            logger.info(f"The engine performs context stage, setting num_cpu_blocks to 1")
-            num_cpu_blocks = 1
+        
         logger.info("Allocating kv cache")
         await asyncio.gather(*self._remote_call_all_workers_async(
             "init_kvcache_and_swap", num_gpu_blocks, num_cpu_blocks
