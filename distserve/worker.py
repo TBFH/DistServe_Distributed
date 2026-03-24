@@ -256,10 +256,6 @@ class ParaWorker:
         input_tokens_batched,
         first_token_indexes,
         block_table,
-        
-        current_layer_input,
-        layer_id,
-        operation,
         intermed = None,
     ) -> List[int]:
         """Run one step of inference on the batch of requests."""
@@ -285,23 +281,9 @@ class ParaWorker:
         self.intermed_output = torch.empty(
             intermed_shape, dtype=self.model_config.get_torch_dtype(), device="cuda"
         )
-        # if not self.parallel_config.is_first_stage() and len(input_tokens_batched) > 0:
-        #     _, inter_in = intermed
-        #     self.intermed_input = inter_in
-
-        intermed = [inter if isinstance(inter, tuple) else ray.get(inter) for inter in intermed]
-        if len(intermed) == 1:
-            _, inter_in = intermed[0]
-            if inter_in != None:
-                self.intermed_input = inter_in
-        else:
-            gathered_output = torch.zeros_like(intermed[0][1], dtype=self.model_config.get_torch_dtype(), device="cuda")
-            for _, output_tensor in intermed:
-                gathered_output += output_tensor
-            self.intermed_input = gathered_output
-
-        if not isinstance(current_layer_input, torch.Tensor):
-            _, current_layer_input = current_layer_input
+        if not self.parallel_config.is_first_stage() and len(input_tokens_batched) > 0:
+            _, inter_in = intermed
+            self.intermed_input = inter_in
 
         start = time.time()
         # print(f"Worker {self.stage}.#{self.worker_id} Step begin")
@@ -314,15 +296,11 @@ class ParaWorker:
             block_table,
             self.intermed_input,
             self.intermed_output,
-
-            current_layer_input,
-            layer_id,
-            operation
         )
         self.execution_time += time.time() - start
         # print(f"Worker {self.stage}.#{self.worker_id} Step end")
 
-        return generated_tokens_ids, copy.deepcopy(self.intermed_output)
+        return generated_tokens_ids, self.intermed_output.clone()
     
     def send_kvcache(
         self,

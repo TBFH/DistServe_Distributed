@@ -200,13 +200,13 @@ class SingleStageLLMEngine(ABC):
         gpu_blocks = []
         for future in futures:
             result = ray.get(future)
-            node_name = self.device_map[result['node_id']]
+            # node_name = self.device_map[result['node_id']]
             gpu_block = result['num_gpu_blocks']
             available_vram = result['available_vram']
             model_vram = result['peak_vram']
             kvcache_vram = available_vram * self.cache_config.gpu_memory_utilization - model_vram
             gpu_blocks.append(gpu_block)
-            outlogs += f"{node_name}: \n"
+            # outlogs += f"{node_name}: \n"
             outlogs += f"\t Block Available: {gpu_block} \n"
             outlogs += f"\t VRAM Available: {((available_vram) / (1024**3)):.2f} GB \n"
             outlogs += f"\t VRAM Utilization Constraint: {self.cache_config.gpu_memory_utilization * 100}% \n"
@@ -238,46 +238,56 @@ class SingleStageLLMEngine(ABC):
                 handlers.append(getattr(worker, func_name).remote(*args))
         return handlers
     
+    # def remote_forward_async(self, *args):
+    #     """
+    #     call all worker's forward asynchronously and transmit intermediate results between workers
+    #     """
+        
+    #     intermed = [(None, None)]
+    #     current_layer_input = torch.empty(0, dtype=self.model_config.get_torch_dtype(), device="cuda")
+    #     num_layer_per_stage = self.model_config.get_num_layers() // self.parallel_config.pipeline_parallel_size
+    #     intermed_in = None
+
+    #     for pp_id, stage in enumerate(self.workers):
+    #         for layer_id in range(num_layer_per_stage):
+
+    #             if layer_id == 0 and pp_id == 0:
+    #                 intermeds = []
+    #                 for worker in stage:
+    #                     intermed_t = worker.step.remote(*args, current_layer_input, layer_id, 0, intermed)
+    #                     intermeds.append(intermed_t)
+    #                 current_layer_input = intermeds
+    #                 intermed_in = intermeds
+
+    #             for j in [1,2,3]:
+    #                 intermeds = []
+    #                 for idx, worker in enumerate(stage):
+    #                     if j == 1:
+    #                         intermed_t = worker.step.remote(*args, current_layer_input[idx], layer_id, j, [intermed_in[idx]])
+    #                     else:
+    #                         intermed_t = worker.step.remote(*args, current_layer_input[idx], layer_id, j, intermed_in)
+    #                     intermeds.append(intermed_t)
+    #                 intermed_in = intermeds
+            
+    #             current_layer_input = intermed_in
+        
+    #     # 最后计算Layernorm / RMSNorm 及 Sampling
+    #     intermeds = []
+    #     for idx, worker in enumerate(stage):
+    #         intermed_t = worker.step.remote(*args, current_layer_input[idx], layer_id, -1, [intermed_in[idx]])
+    #         intermeds.append(intermed_t)
+
+    #     return intermeds[0]
+
     def remote_forward_async(self, *args):
         """
         call all worker's forward asynchronously and transmit intermediate results between workers
         """
-        
-        intermed = [(None, None)]
-        current_layer_input = torch.empty(0, dtype=self.model_config.get_torch_dtype(), device="cuda")
-        num_layer_per_stage = self.model_config.get_num_layers() // self.parallel_config.pipeline_parallel_size
-        intermed_in = None
-
-        for pp_id, stage in enumerate(self.workers):
-            for layer_id in range(num_layer_per_stage):
-
-                if layer_id == 0 and pp_id == 0:
-                    intermeds = []
-                    for worker in stage:
-                        intermed_t = worker.step.remote(*args, current_layer_input, layer_id, 0, intermed)
-                        intermeds.append(intermed_t)
-                    current_layer_input = intermeds
-                    intermed_in = intermeds
-
-                for j in [1,2,3]:
-                    intermeds = []
-                    for idx, worker in enumerate(stage):
-                        if j == 1:
-                            intermed_t = worker.step.remote(*args, current_layer_input[idx], layer_id, j, [intermed_in[idx]])
-                        else:
-                            intermed_t = worker.step.remote(*args, current_layer_input[idx], layer_id, j, intermed_in)
-                        intermeds.append(intermed_t)
-                    intermed_in = intermeds
-            
-                current_layer_input = intermed_in
-        
-        # 最后计算Layernorm / RMSNorm 及 Sampling
-        intermeds = []
-        for idx, worker in enumerate(stage):
-            intermed_t = worker.step.remote(*args, current_layer_input[idx], layer_id, -1, [intermed_in[idx]])
-            intermeds.append(intermed_t)
-
-        return intermeds[0]
+        intermed = None
+        for stage in self.workers:
+            for worker in stage:
+                intermed = worker.step.remote(*args, intermed)
+        return intermed
 
     def abort_request(self, request_id: int):
         """
