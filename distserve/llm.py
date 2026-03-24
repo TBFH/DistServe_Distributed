@@ -110,14 +110,18 @@ class AsyncLLM:
         disagg_parallel_config: DisaggParallelConfig,
         cache_config: CacheConfig,
         context_sched_config: ContextStageSchedConfig,
-        decoding_sched_config: DecodingStageSchedConfig
+        decoding_sched_config: DecodingStageSchedConfig,
+        context_devices: List[str] = None,
+        decoding_devices: List[str] = None
     ):
         self.engine = LLMEngine(
             model_config,
             disagg_parallel_config,
             cache_config,
             context_sched_config,
-            decoding_sched_config
+            decoding_sched_config,
+            context_devices,
+            decoding_devices
         )
         
         asyncio.run(self.engine.initialize())
@@ -129,9 +133,9 @@ class AsyncLLM:
             model_config=ModelConfig(
                 model=args.model,
                 tokenizer=args.tokenizer,
-                trust_remote_code=args.trust_remote_code,
+                # trust_remote_code=args.trust_remote_code,
                 seed=args.seed,
-                use_dummy_weights=args.use_dummy_weights
+                # use_dummy_weights=args.use_dummy_weights
             ),
             disagg_parallel_config=DisaggParallelConfig(
                 context=ParallelConfig(
@@ -158,9 +162,11 @@ class AsyncLLM:
                 policy=args.decoding_sched_policy,
                 max_batch_size=args.decoding_max_batch_size,
                 max_tokens_per_batch=args.decoding_max_tokens_per_batch,
-                model_name=args.model,
+                # model_name=args.model,
                 waiting_block_prop_threshold=0.05
-            )
+            ),
+            context_devices=eval(args.context_devices),
+            decoding_devices=eval(args.decoding_devices)
         )
 
     async def start_event_loop(self):

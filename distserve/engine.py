@@ -427,23 +427,34 @@ def add_engine_cli_args(parser: argparse.ArgumentParser):
     
     parser.add_argument("--context-pipeline-parallel-size", type=int, default=2)
     parser.add_argument("--context-tensor-parallel-size", type=int, default=1)
-    parser.add_argument("--decoding-pipeline-parallel-size", type=int, default=2)
+    parser.add_argument("--decoding-pipeline-parallel-size", type=int, default=4)
     parser.add_argument("--decoding-tensor-parallel-size", type=int, default=1)
     
     parser.add_argument("--block-size", type=int, default=16)
     parser.add_argument("--max-num-blocks-per-req", type=int, default=256)
-    parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
-    parser.add_argument("--swap-space", type=int, default=16)
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.8)
+    parser.add_argument("--swap-space", type=int, default=1)
     
     parser.add_argument("--context-sched-policy", type=str, default="fcfs")
-    parser.add_argument("--context-max-batch-size", type=int, default=256)
-    parser.add_argument("--context-max-tokens-per-batch", type=int, default=4096)
+    parser.add_argument("--context-max-batch-size", type=int, default=128)
+    parser.add_argument("--context-max-tokens-per-batch", type=int, default=16384)
     
     parser.add_argument("--decoding-sched-policy", type=str, default="fcfs")
-    parser.add_argument("--decoding-max-batch-size", type=int, default=256)
-    parser.add_argument("--decoding-max-tokens-per-batch", type=int, default=8192)
+    parser.add_argument("--decoding-max-batch-size", type=int, default=128)
+    parser.add_argument("--decoding-max-tokens-per-batch", type=int, default=16384)
     
     parser.add_argument("--simulator-mode", action="store_true")
     parser.add_argument("--profiler-data-path", type=str, default=None)
     parser.add_argument("--gpu-mem-size-gb", type=float, default=None)
+
+    parser.add_argument(
+        '--context-devices',
+        type=str,
+        default="['pc-3090', 'pc-4090']"
+    )
+    parser.add_argument(
+        '--decoding-devices',
+        type=str,
+        default="['jetson-64g-4', 'jetson-16g-2', 'jetson-16g-8', 'jetson-8g-1']"
+    )
     
